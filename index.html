@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Mönsterbanan — fortsätt mönstret</title>
+<meta name="description" content="Pärla ett mönster tillsammans med Enzo. Vilken färg kommer härnäst? Träna mönster och ordning.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mönsterbanan">
+<meta name="theme-color" content="#fdf3e7">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#fdf3e7;
+    font-family:"Trebuchet MS", Verdana, sans-serif; -webkit-user-select:none; user-select:none;
+    -webkit-tap-highlight-color:transparent; touch-action:none; }
+  canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W = 1000, H = 700, DPR = 1;
+function resize() {
+  DPR = Math.min(2, devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', resize);
+
+const COL = {
+  röd: '#e2544a', gul: '#f7c948', blå: '#4f8ed6', grön: '#6fbf85', lila: '#9b6bc9', rosa: '#f2a0b4'
+};
+const NAMN = { 'röd':'röd', 'gul':'gul', 'blå':'blå', 'grön':'grön', 'lila':'lila', 'rosa':'rosa' };
+
+const RUNDOR = [
+  { mönster: ['röd', 'gul'], visa: 5, fylla: 3 },
+  { mönster: ['blå', 'grön', 'grön'], visa: 4, fylla: 3 },
+  { mönster: ['gul', 'gul', 'rosa'], visa: 4, fylla: 3 },
+  { mönster: ['röd', 'blå', 'gul'], visa: 4, fylla: 3 },
+  { mönster: ['grön', 'lila', 'lila', 'grön'], visa: 4, fylla: 4 },
+  { mönster: ['rosa', 'röd', 'rosa', 'gul'], visa: 3, fylla: 3 },
+];
+
+const S = {
+  runda: 0, plats: 0, fyllda: [], skak: 0, klar: false, t: 0,
+  medalj: 0, fel: 0, hints: [], msg: '', msgT: 0,
+};
+
+function runda() { return RUNDOR[Math.min(S.runda, RUNDOR.length - 1)]; }
+function sekvens() {
+  const r = runda();
+  const out = [];
+  const n = r.visa + r.fylla;
+  for (let i = 0; i < n; i++) out.push(r.mönster[i % r.mönster.length]);
+  return out;
+}
+function rattSvar() {
+  const seq = sekvens();
+  return seq[runda().visa + S.plats];
+}
+
+// --- ljud
+let actx = null;
+function audio() { if (!actx) { try { actx = new (AudioContext || webkitAudioContext)(); } catch (e) {} } return actx; }
+function tone(f, dur, vol, type, slide) {
+  const a = audio(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = type || 'sine'; o.frequency.value = f;
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(50, slide), a.currentTime + dur);
+  g.gain.value = vol || 0.05; g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + dur);
+  o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + dur);
+}
+function speak(t) {
+  try {
+    if (!('speechSynthesis' in window)) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(t);
+    u.lang = 'sv-SE'; u.rate = 0.95; u.pitch = 1.08;
+    const v = (speechSynthesis.getVoices() || []).filter(function (x) { return (x.lang || '').indexOf('sv') === 0; })[0];
+    if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+// --- layout
+let L = { beads: [], slots: [], buttons: [], enzo: {} };
+function layout() {
+  const n = runda().visa + runda().fylla;
+  const pad = Math.max(24, W * 0.04);
+  const r = Math.max(24, Math.min(40, (W - pad * 2) / (n * 2.5)));
+  const gap = r * 2 + Math.max(6, r * 0.34);
+  const totalW = gap * (n - 1);
+  const startX = W / 2 - totalW / 2;
+  const y = H * 0.42;
+  L.beads = [];
+  for (let i = 0; i < n; i++) L.beads.push({ i: i, x: startX + i * gap, y: y, r: r });
+  // knappar
+  const cols = Object.keys(COL);
+  const bw = Math.min(112, (W - pad * 2) / cols.length - 14);
+  const by = H - Math.max(120, H * 0.2) / 2 - 10;
+  L.buttons = [];
+  for (let i = 0; i < cols.length; i++) {
+    L.buttons.push({
+      id: cols[i], x: pad + (bw + 14) * i + bw / 2, y: by, r: bw * 0.46,
+    });
+  }
+  L.enzo = { x: W - 108, y: H * 0.42 + 30, s: 0.6 };
+}
+
+// --- rita
+function bead(x, y, r, id, alpha) {
+  const c = COL[id] || '#ccc';
+  ctx.save();
+  ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+  ctx.fillStyle = 'rgba(0,0,0,.14)';
+  ctx.beginPath(); ctx.arc(x, y + 6, r * 0.98, 0, 6.3); ctx.fill();
+  ctx.fillStyle = c;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 6.3); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.beginPath(); ctx.arc(x - r * 0.26, y - r * 0.28, r * 0.34, 0, 6.3); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = Math.max(2, r * 0.1);
+  ctx.beginPath(); ctx.arc(x, y, r * 0.82, 0.2, 2.2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawEnzo(x, y, s) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  const bob = Math.sin(S.t * 2.2) * 4;
+  ctx.fillStyle = 'rgba(0,0,0,.12)';
+  ctx.beginPath(); ctx.ellipse(0, 100, 66, 15, 0, 0, 6.3); ctx.fill();
+  ctx.save(); ctx.translate(0, bob);
+  ctx.fillStyle = '#7bcbb6';
+  ctx.beginPath(); ctx.ellipse(0, 0, 76, 80, 0, 0, 6.3); ctx.fill();
+  ctx.fillStyle = '#fff6ec';
+  ctx.beginPath(); ctx.moveTo(-40, 24); ctx.lineTo(40, 24); ctx.lineTo(48, 82); ctx.lineTo(-48, 82); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#f3e1cf'; ctx.beginPath(); ctx.arc(0, -16, 47, 0, 6.3); ctx.fill();
+  ctx.fillStyle = '#ef8064'; ctx.beginPath(); ctx.arc(0, -52, 50, Math.PI, 0); ctx.fill();
+  ctx.fillRect(-52, -54, 104, 10);
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-17, -18, 13, 0, 6.3); ctx.arc(17, -18, 13, 0, 6.3); ctx.fill();
+  ctx.fillStyle = '#4a3f39';
+  if (S.klar) {
+    ctx.lineWidth = 4; ctx.strokeStyle = '#4a3f39';
+    ctx.beginPath(); ctx.arc(-17, -18, 6, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(17, -18, 6, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.arc(-15, -18, 6, 0, 6.3); ctx.arc(19, -18, 6, 0, 6.3); ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(242,160,180,.6)';
+  ctx.beginPath(); ctx.arc(-31, 2, 9, 0, 6.3); ctx.arc(31, 2, 9, 0, 6.3); ctx.fill();
+  ctx.strokeStyle = '#4a3f39'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(0, 8, 15, 0.15, Math.PI - 0.15); ctx.stroke();
+  ctx.restore(); ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function draw() {
+  const dt = Math.min(0.05, (performance.now() - (draw.last || performance.now())) / 1000);
+  draw.last = performance.now();
+  S.t += dt;
+  if (S.msgT > 0) S.msgT -= dt * 1000;
+  if (S.skak > 0) S.skak = Math.max(0, S.skak - dt * 3);
+
+  // bakgrund
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#eaf7f1'); g.addColorStop(1, '#fdf3e7');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // moln
+  ctx.fillStyle = 'rgba(255,255,255,.7)';
+  for (let i = 0; i < 4; i++) {
+    const cx = ((i * 330 + S.t * 12) % (W + 300)) - 150, cy = 60 + (i % 2) * 52;
+    ctx.beginPath(); ctx.arc(cx, cy, 32, 0, 6.3); ctx.arc(cx + 34, cy + 4, 24, 0, 6.3); ctx.arc(cx - 34, cy + 6, 20, 0, 6.3); ctx.fill();
+  }
+
+  // band/snöre
+  const b0 = L.beads[0], b1 = L.beads[L.beads.length - 1];
+  if (b0 && b1) {
+    ctx.strokeStyle = '#c9b6a3'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(b0.x - b0.r - 30, b0.y); ctx.lineTo(b1.x + b1.r + 30, b1.y); ctx.stroke();
+  }
+
+  const seq = sekvens();
+  const visa = runda().visa;
+  const skak = S.skak > 0 ? Math.sin(S.t * 60) * 10 * S.skak : 0;
+
+  // pärlor
+  for (const b of L.beads) {
+    if (b.i < visa) {
+      bead(b.x, b.y, b.r, seq[b.i]);
+    } else {
+      const idx = b.i - visa;
+      const fylld = S.fyllda[idx];
+      if (fylld) {
+        bead(b.x, b.y, b.r, fylld, 1);
+      } else if (idx === S.plats) {
+        ctx.save();
+        ctx.translate(skak, 0);
+        ctx.setLineDash([9, 9]);
+        ctx.strokeStyle = '#b6a59689'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 4, 0, 6.3); ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = '#c9b6a3';
+        ctx.font = 'bold ' + Math.round(b.r * 0.9) + 'px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('?', b.x, b.y + b.r * 0.32);
+      } else {
+        ctx.setLineDash([7, 9]); ctx.strokeStyle = 'rgba(180,165,150,.55)'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 6.3); ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+  }
+
+  drawEnzo(L.enzo.x, L.enzo.y, L.enzo.s);
+
+  // färgknappar
+  for (const b of L.buttons) {
+    const chosen = S.klar;
+    ctx.globalAlpha = chosen ? 0.5 : 1;
+    const lift = (S.t % 2 < 1) ? 0 : 0;
+    bead(b.x, b.y + lift, b.r, b.id);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(74,63,57,.55)';
+    ctx.font = 'bold ' + Math.round(b.r * 0.36) + 'px "Trebuchet MS", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(NAMN[b.id], b.x, b.y + b.r + 22);
+  }
+
+  // statusrad
+  ctx.fillStyle = 'rgba(255,250,243,.94)';
+  roundRect(W / 2 - 150, 22, 300, 62, 22); ctx.fill();
+  ctx.fillStyle = '#a08e80'; ctx.font = 'bold 12px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('MÖNSTER ' + (S.runda + 1) + ' AV ' + RUNDOR.length, W / 2, 46);
+  ctx.fillStyle = '#4a3f39'; ctx.font = 'bold 20px "Trebuchet MS", sans-serif';
+  ctx.fillText(S.klar ? 'KLART!' : 'Vilken färg kommer nu?', W / 2, 72);
+
+  // prickar
+  for (let i = 0; i < RUNDOR.length; i++) {
+    ctx.fillStyle = i < S.runda ? '#63bda8' : (i === S.runda ? '#4a3f39' : '#ded3c6');
+    ctx.beginPath(); ctx.arc(W / 2 - (RUNDOR.length - 1) * 12 + i * 24, 102, i === S.runda ? 7 : 5, 0, 6.3); ctx.fill();
+  }
+
+  // stjärna + medalj
+  ctx.fillStyle = 'rgba(255,250,243,.94)'; roundRect(20, 20, 150, 62, 20); ctx.fill();
+  ctx.fillStyle = '#f7c948';
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rr = i % 2 ? 8 : 17, a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = 52 + Math.cos(a) * rr, py = 51 + Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#4a3f39'; ctx.font = 'bold 24px "Trebuchet MS", sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('× ' + S.medalj, 78, 60);
+
+  // meddelande
+  if (S.msgT > 0 && !S.klar) {
+    ctx.globalAlpha = Math.min(1, S.msgT / 250);
+    const tw = Math.min(420, ctx.measureText(S.msg).width + 80);
+    ctx.fillStyle = 'rgba(74,63,57,.9)'; roundRect(W / 2 - tw / 2, H * 0.60, tw, 54, 26); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 20px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(S.msg, W / 2, H * 0.60 + 35);
+    ctx.globalAlpha = 1;
+  }
+
+  // klar-overlay
+  if (S.klar) {
+    ctx.fillStyle = 'rgba(255,250,243,.96)';
+    roundRect(W / 2 - 200, H * 0.16, 400, 150, 26); ctx.fill();
+    ctx.fillStyle = '#2f7d63'; ctx.font = 'bold 28px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(S.runda >= RUNDOR.length - 1 ? 'ALLA MÖNSTER KLARA!' : 'VILKET MÖNSTER!', W / 2, H * 0.16 + 56);
+    ctx.fillStyle = '#a08e80'; ctx.font = 'bold 16px "Trebuchet MS", sans-serif';
+    ctx.fillText(S.runda >= RUNDOR.length - 1 ? 'Tryck för att börja om' : 'Tryck för nästa mönster', W / 2, H * 0.16 + 88);
+    ctx.fillStyle = '#63bda8';
+    ctx.beginPath(); ctx.arc(W / 2, H * 0.16 + 120, 20, 0, 6.3); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 18px "Trebuchet MS", sans-serif';
+    ctx.fillText('▶', W / 2 + 1, H * 0.16 + 127);
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// --- inmatning
+cv.addEventListener('pointerdown', function (e) {
+  e.preventDefault(); audio();
+  const x = e.clientX, y = e.clientY;
+
+  if (S.klar) {
+    if (x > W / 2 - 220 && x < W / 2 + 220 && y > H * 0.12 && y < H * 0.36) {
+      if (S.runda >= RUNDOR.length - 1) {
+        S.runda = 0; S.medalj = 0;
+      } else {
+        S.runda++;
+      }
+      S.plats = 0; S.fyllda = []; S.klar = false;
+      layout(); sfxNext(); tone(660, 0.1, 0.05, 'triangle', 880);
+      return;
+    }
+    return;
+  }
+
+  for (const b of L.buttons) {
+    const d = Math.hypot(x - b.x, y - b.y);
+    if (d < b.r * 1.5) {
+      tryBead(b.id);
+      return;
+    }
+  }
+});
+
+function sfxNext() { tone(880, 0.1, 0.04, 'sine', 1180); }
+
+function tryBead(id) {
+  if (id === rattSvar()) {
+    S.fyllda[S.plats] = id;
+    S.plats++;
+    tone(560 + S.plats * 90, 0.12, 0.05, 'triangle', 760 + S.plats * 90);
+    const b = L.beads[runda().visa + S.plats - 1];
+    if (S.plats >= runda().fylla) {
+      S.klar = true; S.medalj++;
+      setTimeout(function () { tone(880, 0.14, 0.05, 'triangle', 1320); }, 120);
+      setTimeout(function () { tone(1180, 0.18, 0.05, 'sine'); }, 260);
+      S.msgT = 0;
+    } else {
+      setMsg('Rätt!');
+    }
+  } else {
+    S.skak = 1; S.fel++;
+    tone(240, 0.16, 0.05, 'sawtooth', 170);
+    setMsg('Prova igen!');
+  }
+}
+function setMsg(m) { S.msg = m; S.msgT = 1600; }
+
+resize();
+layout();
+requestAnimationFrame(draw);
+
+window.__mb = {
+  state: function () { return { runda: S.runda, plats: S.plats, fyllda: S.fyllda.slice(), ratt: rattSvar(), klar: S.klar, medalj: S.medalj, fel: S.fel }; },
+  tap: function (id) { tryBead(id); },
+  layout: function () { return L; },
+  next: function () { S.klar = true; S.plats = runda().fylla; },
+};
+</script>
+</body>
+</html>
