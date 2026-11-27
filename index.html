@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Mönsterbanan — fortsätt mönstret</title>
+<meta name="description" content="Pärla ett mönster tillsammans med Kotten. Vilken färg kommer härnäst? Träna mönster och ordning.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Mönsterbanan — fortsätt mönstret">
+<meta property="og:description" content="Pärla ett mönster tillsammans med Kotten. Vilken färg kommer härnäst? Träna mönster och ordning.">
+<meta property="og:image" content="https://monsterbanan.shipholm.dev/delningsbild.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:locale" content="sv_SE">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mönsterbanan">
+<meta name="theme-color" content="#fdf3e7">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#fdf3e7;
+    font-family:"Trebuchet MS", Verdana, sans-serif; -webkit-user-select:none; user-select:none;
+    -webkit-tap-highlight-color:transparent; touch-action:none; }
+  canvas { display:block; touch-action:none; }
+</style>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="192x192" href="icon-192.png">
+<style>
+/* Lgr22-märket: litet, diskret, alltid samma i alla spel */
+.lgr22{position:fixed;right:10px;bottom:10px;z-index:40;display:flex;align-items:center;
+  gap:5px;padding:4px 9px 4px 7px;border-radius:12px;background:rgba(255,250,243,.78);
+  border:1px solid rgba(74,63,57,.18);color:#6b5d54;font:600 11px/1 "Trebuchet MS",system-ui,sans-serif;
+  letter-spacing:.4px;text-decoration:none;opacity:.72;-webkit-tap-highlight-color:transparent;
+  transition:opacity .15s ease}
+.lgr22:hover,.lgr22:focus{opacity:1}
+.lgr22 svg{width:12px;height:12px;display:block}
+@media (max-width:520px){.lgr22{font-size:10px;padding:3px 8px 3px 6px}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="kotten.js"></script>
+<script src="sma-ljud.js"></script>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W = 1000, H = 700, DPR = 1;
+function resize() {
+  DPR = Math.min(2, devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', function () { resize(); layout(); });
+
+const COL = {
+  röd: '#e2544a', gul: '#f7c948', blå: '#4f8ed6', grön: '#6fbf85', lila: '#9b6bc9', rosa: '#f2a0b4'
+};
+const NAMN = { 'röd':'röd', 'gul':'gul', 'blå':'blå', 'grön':'grön', 'lila':'lila', 'rosa':'rosa' };
+
+const RUNDOR = [
+  { mönster: ['röd', 'gul'], visa: 5, fylla: 3 },
+  { mönster: ['blå', 'grön', 'grön'], visa: 4, fylla: 3 },
+  { mönster: ['gul', 'gul', 'rosa'], visa: 4, fylla: 3 },
+  { mönster: ['röd', 'blå', 'gul'], visa: 4, fylla: 3 },
+  { mönster: ['grön', 'lila', 'lila', 'grön'], visa: 4, fylla: 4 },
+  { mönster: ['rosa', 'röd', 'rosa', 'gul'], visa: 3, fylla: 3 },
+];
+
+const S = {
+  runda: 0, plats: 0, fyllda: [], skak: 0, klar: false, t: 0,
+  medalj: 0, fel: 0, hints: [], msg: '', msgT: 0,
+};
+
+function runda() { return RUNDOR[Math.min(S.runda, RUNDOR.length - 1)]; }
+function sekvens() {
+  const r = runda();
+  const out = [];
+  const n = r.visa + r.fylla;
+  for (let i = 0; i < n; i++) out.push(r.mönster[i % r.mönster.length]);
+  return out;
+}
+function rattSvar() {
+  const seq = sekvens();
+  return seq[runda().visa + S.plats];
+}
+
+// --- ljud
+let actx = null;
+function audio() { if (!actx) { try { actx = new (AudioContext || webkitAudioContext)(); } catch (e) {} } return actx; }
+function tone(f, dur, vol, type, slide) {
+  const a = audio(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = type || 'sine'; o.frequency.value = f;
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(50, slide), a.currentTime + dur);
+  g.gain.value = vol || 0.05; g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + dur);
+  o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + dur);
+}
+// --- layout
+let L = { beads: [], slots: [], buttons: [], marre: {} };
+function layout() {
+  const n = runda().visa + runda().fylla;
+  const small = W < 560;
+  const pad = Math.max(18, Math.min(40, W * 0.05));
+  // pärlorna skalas efter bredden så raden alltid ryms (även iPhone i porträtt)
+  const r = Math.max(12, Math.min(Math.min(40, H * 0.055), (W - pad * 2) / (n * 2.35)));
+  const gap = r * 2 + Math.max(6, r * 0.36);
+  const totalW = gap * (n - 1);
+  const startX = W / 2 - totalW / 2;
+  const y = small ? H * 0.29 : H * 0.40;
+  L.beads = [];
+  for (let i = 0; i < n; i++) L.beads.push({ i: i, x: startX + i * gap, y: y, r: r });
+
+  // sex färgknappar: en rad om de ryms, annars två rader om tre
+  const cols = Object.keys(COL);
+  let bw = Math.min(112, (W - pad * 2) / cols.length - 10);
+  const rows = bw < 56 ? 2 : 1;
+  const perRow = Math.ceil(cols.length / rows);
+  bw = Math.min(112, (W - pad * 2) / perRow - 12);
+  const br = bw * 0.46;
+  const rowH = br * 2 + (small ? 26 : 34);
+  const bottomPad = Math.max(14, H * 0.035);
+  const by1 = H - bottomPad - br - (small ? 14 : 20);
+  L.buttons = cols.map(function (id, i) {
+    const row = Math.floor(i / perRow), col = i % perRow;
+    const inRow = Math.min(perRow, cols.length - row * perRow);
+    const rowW = (bw + 12) * inRow - 12;
+    const x0 = W / 2 - rowW / 2 + bw / 2;
+    return { id: id, x: x0 + col * (bw + 12), y: by1 - (rows - 1 - row) * rowH, r: br };
+  });
+
+  // Kotten står bredvid snöret – under det på smala skärmar
+  L.marre = small
+    ? { x: W - 58, y: y + r * 2 + 54, s: 0.26 }
+    : { x: W - 108, y: y + 30, s: 0.6 };
+}
+
+// --- rita
+function bead(x, y, r, id, alpha) {
+  const c = COL[id] || '#ccc';
+  ctx.save();
+  ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+  ctx.fillStyle = 'rgba(0,0,0,.14)';
+  ctx.beginPath(); ctx.arc(x, y + 6, r * 0.98, 0, 6.3); ctx.fill();
+  ctx.fillStyle = c;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 6.3); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.beginPath(); ctx.arc(x - r * 0.26, y - r * 0.28, r * 0.34, 0, 6.3); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = Math.max(2, r * 0.1);
+  ctx.beginPath(); ctx.arc(x, y, r * 0.82, 0.2, 2.2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawKotten(x, y, s) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  const bob = Math.sin((typeof state !== 'undefined' ? state.t : (typeof S !== 'undefined' ? S.t : 0)) * 2) * 3;
+  ctx.fillStyle = 'rgba(0,0,0,.12)';
+  ctx.beginPath(); ctx.ellipse(0, 96 + bob, 56, 13, 0, 0, 6.3); ctx.fill();
+  KOTTEN.drawAtFeet(ctx, 0, 96 + bob, 150, { wave: 0.8 });
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function draw() {
+  const dt = Math.min(0.05, (performance.now() - (draw.last || performance.now())) / 1000);
+  draw.last = performance.now();
+  S.t += dt;
+  if (S.msgT > 0) S.msgT -= dt * 1000;
+  if (S.skak > 0) S.skak = Math.max(0, S.skak - dt * 3);
+
+  // bakgrund
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#eaf7f1'); g.addColorStop(1, '#fdf3e7');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // moln
+  ctx.fillStyle = 'rgba(255,255,255,.7)';
+  for (let i = 0; i < 4; i++) {
+    const cx = ((i * 330 + S.t * 12) % (W + 300)) - 150, cy = 60 + (i % 2) * 52;
+    ctx.beginPath(); ctx.arc(cx, cy, 32, 0, 6.3); ctx.arc(cx + 34, cy + 4, 24, 0, 6.3); ctx.arc(cx - 34, cy + 6, 20, 0, 6.3); ctx.fill();
+  }
+
+  // band/snöre
+  const b0 = L.beads[0], b1 = L.beads[L.beads.length - 1];
+  if (b0 && b1) {
+    ctx.strokeStyle = '#c9b6a3'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(b0.x - b0.r - 30, b0.y); ctx.lineTo(b1.x + b1.r + 30, b1.y); ctx.stroke();
+  }
+
+  const seq = sekvens();
+  const visa = runda().visa;
+  const skak = S.skak > 0 ? Math.sin(S.t * 60) * 10 * S.skak : 0;
+
+  // pärlor
+  for (const b of L.beads) {
+    if (b.i < visa) {
+      bead(b.x, b.y, b.r, seq[b.i]);
+    } else {
+      const idx = b.i - visa;
+      const fylld = S.fyllda[idx];
+      if (fylld) {
+        bead(b.x, b.y, b.r, fylld, 1);
+      } else if (idx === S.plats) {
+        ctx.save();
+        ctx.translate(skak, 0);
+        ctx.setLineDash([9, 9]);
+        ctx.strokeStyle = '#b6a59689'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 4, 0, 6.3); ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = '#c9b6a3';
+        ctx.font = 'bold ' + Math.round(b.r * 0.9) + 'px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('?', b.x, b.y + b.r * 0.32);
+      } else {
+        ctx.setLineDash([7, 9]); ctx.strokeStyle = 'rgba(180,165,150,.55)'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 6.3); ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+  }
+
+  drawKotten(L.marre.x, L.marre.y, L.marre.s);
+
+  // färgknappar
+  for (const b of L.buttons) {
+    const chosen = S.klar;
+    ctx.globalAlpha = chosen ? 0.5 : 1;
+    const lift = (S.t % 2 < 1) ? 0 : 0;
+    bead(b.x, b.y + lift, b.r, b.id);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(74,63,57,.55)';
+    ctx.font = 'bold ' + Math.round(b.r * 0.36) + 'px "Trebuchet MS", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(NAMN[b.id], b.x, b.y + b.r + 22);
+  }
+
+  // --- topp: medalj, fråga och prickar (två rader på smala skärmar)
+  const small = W < 560;
+  const pad = Math.max(14, Math.min(28, W * 0.035));
+  const medW = Math.min(150, W * 0.34), medH = small ? 46 : 62;
+  ctx.fillStyle = 'rgba(255,250,243,.94)';
+  roundRect(pad, 16, medW, medH, medH * 0.3); ctx.fill();
+  const starR = small ? 12 : 17;
+  ctx.fillStyle = '#f7c948';
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rr = i % 2 ? starR * 0.47 : starR, a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = pad + medH * 0.42 + Math.cos(a) * rr, py = 16 + medH / 2 + Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#4a3f39';
+  ctx.font = 'bold ' + (small ? 19 : 24) + 'px "Trebuchet MS", sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('× ' + S.medalj, pad + medH * 0.42 + starR + 8, 16 + medH / 2 + (small ? 7 : 9));
+
+  const stW = small ? W - pad * 2 : Math.min(320, W - medW * 2 - 60);
+  const stH = small ? 58 : 62;
+  const stX = W / 2 - stW / 2, stY = small ? 16 + medH + 12 : 22;
+  ctx.fillStyle = 'rgba(255,250,243,.94)';
+  roundRect(stX, stY, stW, stH, 22); ctx.fill();
+  ctx.fillStyle = '#a08e80';
+  ctx.font = 'bold ' + (small ? 10 : 12) + 'px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('MÖNSTER ' + (S.runda + 1) + ' AV ' + RUNDOR.length, W / 2, stY + (small ? 18 : 24));
+  ctx.fillStyle = '#4a3f39';
+  const fsFraga = Math.round(Math.min(small ? 17 : 20, (stW - 24) / 11));
+  ctx.font = 'bold ' + fsFraga + 'px "Trebuchet MS", sans-serif';
+  ctx.fillText(S.klar ? 'KLART!' : 'Vilken färg kommer nu?', W / 2, stY + (small ? 40 : 50));
+
+  // prickar: under frågan, eller uppe till höger på smala skärmar
+  const dotY = small ? 16 + medH / 2 : 102;
+  const dotX = small ? W - pad - (RUNDOR.length - 1) * 12 : W / 2 - (RUNDOR.length - 1) * 12;
+  for (let i = 0; i < RUNDOR.length; i++) {
+    ctx.fillStyle = i < S.runda ? '#63bda8' : (i === S.runda ? '#4a3f39' : '#ded3c6');
+    ctx.beginPath(); ctx.arc(dotX + i * 24, dotY, i === S.runda ? 7 : 5, 0, 6.3); ctx.fill();
+  }
+
+  // meddelande
+  if (S.msgT > 0 && !S.klar) {
+    ctx.globalAlpha = Math.min(1, S.msgT / 250);
+    const tw = Math.min(420, ctx.measureText(S.msg).width + 80);
+    ctx.fillStyle = 'rgba(74,63,57,.9)'; roundRect(W / 2 - tw / 2, H * (W < 560 ? 0.50 : 0.60), tw, 54, 26); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 20px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(S.msg, W / 2, H * (W < 560 ? 0.50 : 0.60) + 35);
+    ctx.globalAlpha = 1;
+  }
+
+  // klar-overlay
+  if (S.klar) {
+    ctx.fillStyle = 'rgba(255,250,243,.96)';
+    roundRect(W / 2 - 200, H * 0.16, 400, 150, 26); ctx.fill();
+    ctx.fillStyle = '#2f7d63'; ctx.font = 'bold 28px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(S.runda >= RUNDOR.length - 1 ? 'ALLA MÖNSTER KLARA!' : 'VILKET MÖNSTER!', W / 2, H * 0.16 + 56);
+    ctx.fillStyle = '#a08e80'; ctx.font = 'bold 16px "Trebuchet MS", sans-serif';
+    ctx.fillText(S.runda >= RUNDOR.length - 1 ? 'Tryck för att börja om' : 'Tryck för nästa mönster', W / 2, H * 0.16 + 88);
+    ctx.fillStyle = '#63bda8';
+    ctx.beginPath(); ctx.arc(W / 2, H * 0.16 + 120, 20, 0, 6.3); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 18px "Trebuchet MS", sans-serif';
+    ctx.fillText('▶', W / 2 + 1, H * 0.16 + 127);
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// --- inmatning
+cv.addEventListener('pointerdown', function (e) {
+  e.preventDefault(); audio();
+  const x = e.clientX, y = e.clientY;
+
+  if (S.klar) {
+    if (x > W / 2 - 220 && x < W / 2 + 220 && y > H * 0.12 && y < H * 0.36) {
+      if (S.runda >= RUNDOR.length - 1) {
+        S.runda = 0; S.medalj = 0;
+      } else {
+        S.runda++;
+      }
+      S.plats = 0; S.fyllda = []; S.klar = false;
+      layout(); sfxNext(); tone(660, 0.1, 0.05, 'triangle', 880);
+      return;
+    }
+    return;
+  }
+
+  for (const b of L.buttons) {
+    const d = Math.hypot(x - b.x, y - b.y);
+    if (d < b.r * 1.5) {
+      tryBead(b.id);
+      return;
+    }
+  }
+});
+
+function sfxNext() { tone(880, 0.1, 0.04, 'sine', 1180); }
+
+function tryBead(id) {
+  if (id === rattSvar()) {
+    S.fyllda[S.plats] = id;
+    S.plats++;
+    tone(560 + S.plats * 90, 0.12, 0.05, 'triangle', 760 + S.plats * 90);
+    const b = L.beads[runda().visa + S.plats - 1];
+    if (S.plats >= runda().fylla) {
+      S.klar = true; S.medalj++;
+      setTimeout(function () { tone(880, 0.14, 0.05, 'triangle', 1320); }, 120);
+      setTimeout(function () { tone(1180, 0.18, 0.05, 'sine'); }, 260);
+      S.msgT = 0;
+    } else {
+      setMsg('Rätt!');
+    }
+  } else {
+    S.skak = 1; S.fel++;
+    tone(240, 0.16, 0.05, 'sawtooth', 170);
+    setMsg('Prova igen!');
+  }
+}
+function setMsg(m) { S.msg = m; S.msgT = 1600; }
+
+resize();
+layout();
+requestAnimationFrame(draw);
+
+window.__mb = {
+  state: function () { return { runda: S.runda, plats: S.plats, fyllda: S.fyllda.slice(), ratt: rattSvar(), klar: S.klar, medalj: S.medalj, fel: S.fel }; },
+  tap: function (id) { tryBead(id); },
+  layout: function () { return L; },
+  next: function () { S.klar = true; S.plats = runda().fylla; },
+};
+</script>
+
+<!-- Lgr22: diskret länk till lärarsidan -->
+<a class="lgr22" href="larare.html" title="Lärarsida: vad spelet tränar och koppling till Lgr22" aria-label="Lärarsida med koppling till Lgr22">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/>
+  </svg>
+  Lgr22
+</a>
+
+<script>if('serviceWorker' in navigator){addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});}</script>
+</body>
+</html>
