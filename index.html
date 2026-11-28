@@ -245,7 +245,8 @@ function draw() {
 
   // --- topp: medalj, fråga och prickar (två rader på smala skärmar)
   const small = W < 560;
-  const pad = Math.max(14, Math.min(28, W * 0.035));
+  // Skolappars Kotten-knapp sitter 56 px stor, 12 px från övre vänstra hörnet — håll rutan fri
+  const pad = Math.max(14, Math.min(28, W * 0.035)) + 56;
   const medW = Math.min(150, W * 0.34), medH = small ? 46 : 62;
   ctx.fillStyle = 'rgba(255,250,243,.94)';
   roundRect(pad, 16, medW, medH, medH * 0.3); ctx.fill();
